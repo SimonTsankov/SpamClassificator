@@ -1,6 +1,6 @@
 ﻿#include <mpi.h>
 #include <stdio.h>
-#include "include/csv.h"
+#include "../include/csv.h"
 #include <vector>
 #include <string>
 
