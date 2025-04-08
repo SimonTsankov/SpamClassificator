@@ -458,6 +458,7 @@
     <ClInclude Include="include\NeuralNetwork.h" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="data\short.csv" />
     <None Include="data\spam_assassin.csv" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

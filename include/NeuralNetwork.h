@@ -30,13 +30,16 @@ public:
         return (prob >= 0.5 ? 1 : 0);
     }
     // Предсказания за множество примери (колони на матрицата X)
-    std::vector<int> predict(const Eigen::MatrixXd& X) {
-        std::vector<int> preds;
-        preds.reserve(X.cols());
-        for (int i = 0; i < X.cols(); ++i) {
-            preds.push_back(predict_one(X.col(i)));
+    Eigen::VectorXi predict(const Eigen::MatrixXd& X) {
+        int n_samples = X.rows();  // приемаме, че семплите са редове
+        Eigen::VectorXi predictions(n_samples);
+
+        for (int i = 0; i < n_samples; ++i) {
+            Eigen::VectorXd x = X.row(i).transpose();  // транспонираме ред до вектор-колона
+            predictions(i) = predict_one(x);
         }
-        return preds;
+
+        return predictions;
     }
     // Обучение на модела върху даден тренировъчен набор
     void train(const Eigen::MatrixXd& X, const Eigen::VectorXi& y, int epochs, double lr) {
@@ -45,7 +48,8 @@ public:
             for (int i = 0; i < n; ++i) {
                 // 1. Forward pass за пример i
                 Eigen::VectorXd x = X.col(i);
-                double t = (double)y[i];              // целева стойност (0 или 1)
+                double t = (double)y[i];
+                // целева стойност (0 или 1)
                 Eigen::VectorXd h = (W1 * x + b1).unaryExpr([](double z) { return tanh(z); });
                 double o = (W2 * h + b2)[0];
                 double pred = 1.0 / (1.0 + exp(-o));  // сигмоидна прогноза

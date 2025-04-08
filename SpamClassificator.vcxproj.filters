@@ -953,5 +953,6 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="data\spam_assassin.csv" />
+    <None Include="data\short.csv" />
   </ItemGroup>
 </Project>
