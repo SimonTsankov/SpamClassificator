@@ -1,16 +1,16 @@
 ﻿#include <mpi.h>
 #include <stdio.h>
 #include "../include/csv.h"
-#include <vector>
+//#include <vector>
 #include <string>
-#include <mpi.h>
+//#include <mpi.h>
 #include "../include/Eigen/Dense"
 #include "../include/NeuralNetwork.h"
 //#include "utils.h"
 #include <iostream>
 #include <vector>
-#include <random>
-#include <ctime>
+//#include <random>
+//#include <ctime>
 
 #include <algorithm>
 #include <random>
@@ -18,7 +18,9 @@
 #include <cctype>
 #include <sstream>
 #include <unordered_map>
-#include <filesystem>
+#define _SILENCE_EXPERIMENTAL_FILESYSTEM_DEPRECATION_WARNING
+#include <experimental/filesystem>
+namespace fs = std::experimental::filesystem;
 
 void load_csv(const std::string& filename,
     std::vector<std::string>& texts, std::vector<int>& labels) {
@@ -45,8 +47,7 @@ int main(int argc, char* argv[])
     std::vector<std::string> texts;
     std::vector<int> labels;
     if (rank == 0) {
-        
-        load_csv("C:/Users/Simon/source/repos/SpamClassificator/data/short.csv", texts, labels);
+        load_csv("C:/Users/vladi/OneDrive/Desktop/Parallel data processing/SpamClassificator/data/short.csv", texts, labels);
     }
 
     // 2. Разбъркване на индексите и разделяне на данните на обучаващи (train) и тестови
@@ -315,6 +316,14 @@ int main(int argc, char* argv[])
         }
         double accuracy = (double)correct / test_count;
         std::cout << "Accuracy: " << accuracy * 100.0 << "%" << std::endl;
+    }
+
+    // 10. Записване на обучен модел във файл
+    fs::create_directories("models");
+    std::string model_filename = "models/model_rank_" + std::to_string(rank) + ".nn";
+    model.save(model_filename);
+    if (rank == 0) {
+        std::cout << "Моделите са запазени в директорията 'models/'" << std::endl;
     }
 
     MPI_Finalize();
