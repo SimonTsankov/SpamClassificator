@@ -19,20 +19,33 @@
 #include <sstream>
 #include <unordered_map>
 #include <filesystem>
+#define _SILENCE_EXPERIMENTAL_FILESYSTEM_DEPRECATION_WARNING
+#include <experimental/filesystem>
+#include <regex>
 
-void load_csv(const std::string& filename,
-    std::vector<std::string>& texts, std::vector<int>& labels) {
-   
-    io::CSVReader<2, io::trim_chars<' '>, io::double_quote_escape<',', '\"'>> csv(filename);
-    csv.read_header(io::ignore_extra_column, "text", "target");
-   
-    std::string email_text;
-    int target;
-    while (csv.read_row(email_text, target)) {
-        texts.push_back(email_text);
-        labels.push_back(target);
+namespace fs = std::experimental::filesystem;
+// Помощна Lambda-функция за токенизация: малки букви и разделяне по интервали
+auto tokenize = [&](const std::string& text) {
+    std::string cleaned = text;
+    std::transform(cleaned.begin(), cleaned.end(), cleaned.begin(), ::tolower);
+    for (char& ch : cleaned) {
+        if (!std::isalnum(static_cast<unsigned char>(ch))) {
+            ch = ' ';
+        }
     }
-}
+    std::istringstream iss(cleaned);
+    std::string token;
+    std::vector<std::string> tokens;
+    while (iss >> token) {
+        tokens.push_back(token);
+    }
+    return tokens;
+};
+void load_csv(const std::string& filename,
+    std::vector<std::string>& texts, std::vector<int>& labels);
+void save_word_to_index(const std::unordered_map<std::string, int>& word_to_index,
+    const std::string& filename);
+std::unordered_map<std::string, int> load_word_to_index(const std::string& filename);
 
 int main(int argc, char* argv[])
 {
@@ -40,13 +53,140 @@ int main(int argc, char* argv[])
     int rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
+    bool do_train = true;  // по подразбиране тренираме
+    if (argc > 1) {
+        std::string mode = argv[1];
+        if (mode == "prompt") {
+            do_train = false;
+        }
+        else if (mode != "train") {
+            if (rank == 0) {
+                std::cerr << "Unknown mode: " << mode << "\n";
+                std::cerr << "Usage: " << argv[0] << " [train|prompt]" << std::endl;
+            }
+            MPI_Finalize();
+            return 1;
+        }
+    }
+    else
+        do_train = false;
+    std::unordered_map<std::string, int> word_to_index;
+
+    if (!do_train) {
+        std::cout << "Loading models... ";
+        //Prompt
+       
+        if (rank == 0)
+        {
+            word_to_index = load_word_to_index("models/word_to_index.txt");
+        }
+        std::vector<std::string> model_files;
+        if (rank == 0) {
+            for (const auto& entry : fs::directory_iterator("models")) {
+                std::string fname = entry.path().filename().string();
+                if (std::regex_match(fname, std::regex("model_rank_[0-9]+\\.nn"))) {
+                    model_files.push_back(entry.path().string());
+                }
+            }
+        }
+
+        int num_models = 0;
+        if (rank == 0) num_models = model_files.size();
+        MPI_Bcast(&num_models, 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+        // Broadcast model filenames
+        std::string all_filenames;
+        std::vector<int> filename_lengths(num_models);
+        if (rank == 0) {
+            for (int i = 0; i < num_models; ++i) {
+                filename_lengths[i] = model_files[i].size();
+                all_filenames += model_files[i];
+            }
+        }
+        else {
+            model_files.resize(num_models);
+        }
+        MPI_Bcast(filename_lengths.data(), num_models, MPI_INT, 0, MPI_COMM_WORLD);
+
+        int total_filename_chars = 0;
+        for (int len : filename_lengths) total_filename_chars += len;
+
+        if (rank != 0) all_filenames.resize(total_filename_chars);
+        MPI_Bcast(&all_filenames[0], total_filename_chars, MPI_CHAR, 0, MPI_COMM_WORLD);
+
+        // Reconstruct model_files from buffer on non-zero ranks
+        if (rank != 0) {
+            model_files.clear();
+            int offset = 0;
+            for (int i = 0; i < num_models; ++i) {
+                model_files.push_back(all_filenames.substr(offset, filename_lengths[i]));
+                offset += filename_lengths[i];
+            }
+        }
+
+        // Each process loads only a subset of models
+        std::vector<NeuralNetwork> local_models;
+        for (int i = 0; i < num_models; ++i) {
+            if (i % size == rank) {
+                NeuralNetwork model;
+                model.load(model_files[i]);
+                local_models.push_back(std::move(model));
+            }
+        }
+
+        // Start prompting
+        std::string input;
+        while (true) {
+            if (rank == 0) {
+                std::cout << "Enter input (type 'exit' to quit): ";
+                std::getline(std::cin, input);
+            }
+            // Broadcast input to all
+            int input_len = input.length();
+            MPI_Bcast(&input_len, 1, MPI_INT, 0, MPI_COMM_WORLD);
+            if (input_len == 4 && input == "exit") break;
+
+            if (rank != 0) input.resize(input_len);
+            MPI_Bcast(&input[0], input_len, MPI_CHAR, 0, MPI_COMM_WORLD);
+
+            // Tokenize and vectorize
+            std::vector<std::string> tokens = tokenize(input);
+            Eigen::VectorXd input_vector(word_to_index.size());
+            input_vector.setZero();
+            for (const auto& token : tokens) {
+                auto it = word_to_index.find(token);
+                if (it != word_to_index.end()) {
+                    input_vector(it->second) += 1.0f;
+                }
+            }
+
+            // Each local model predicts
+            int local_vote_sum = 0;
+            for (auto& model : local_models) {
+                int pred = model.predict_one(input_vector);
+                local_vote_sum += pred;
+            }
+
+            // Sum votes across processes
+            int global_vote_sum = 0;
+            MPI_Reduce(&local_vote_sum, &global_vote_sum, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
+
+            if (rank == 0) {
+                int final_pred = (global_vote_sum > num_models / 2) ? 1 : 0;
+                std::cout << "Prediction: " << (final_pred == 1 ? "Spam" : "Not Spam") << std::endl;
+            }
+        }
+        MPI_Finalize();
+    }
+    //else train
+    if (rank == 0) std::cout << "Starting training mode..." << std::endl;
 
     // 1. Зареждане на CSV файла с имейли и етикети (колони "text" и "target")
     std::vector<std::string> texts;
     std::vector<int> labels;
     if (rank == 0) {
         
-        load_csv("C:/Users/Simon/source/repos/SpamClassificator/data/short.csv", texts, labels);
+        load_csv("data/short.csv", texts, labels);
     }
 
     // 2. Разбъркване на индексите и разделяне на данните на обучаващи (train) и тестови
@@ -102,24 +242,8 @@ int main(int argc, char* argv[])
 
     // 3. Създаване на речник (уникални думи) от тренировъчните текстове на процес 0
     std::vector<std::string> vocabulary;
-    std::unordered_map<std::string, int> word_to_index;
-    // Помощна Lambda-функция за токенизация: малки букви и разделяне по интервали
-    auto tokenize = [&](const std::string& text) {
-        std::string cleaned = text;
-        std::transform(cleaned.begin(), cleaned.end(), cleaned.begin(), ::tolower);
-        for (char& ch : cleaned) {
-            if (!std::isalnum(static_cast<unsigned char>(ch))) {
-                ch = ' ';
-            }
-        }
-        std::istringstream iss(cleaned);
-        std::string token;
-        std::vector<std::string> tokens;
-        while (iss >> token) {
-            tokens.push_back(token);
-        }
-        return tokens;
-    };
+    
+   
     if (rank == 0) {
         vocabulary.reserve(10000);
         for (const std::string& text : train_texts) {
@@ -316,9 +440,69 @@ int main(int argc, char* argv[])
         double accuracy = (double)correct / test_count;
         std::cout << "Accuracy: " << accuracy * 100.0 << "%" << std::endl;
     }
-
+    // 10. Записване на обучен модел във файл
+    fs::create_directories("models");
+    std::string model_filename = "models/model_rank_" + std::to_string(rank) + ".nn";
+    model.save(model_filename);
+    if (rank == 0) {
+        std::cout << "The models are saved at 'models/'" << std::endl;
+    }
+    //11. Запис на word_to_index речник
+    if (rank == 0) {
+        save_word_to_index(word_to_index, "models/word_to_index.txt");
+    }
     MPI_Finalize();
     return 0;
+}
+void save_word_to_index(const std::unordered_map<std::string, int>& word_to_index,
+    const std::string& filename) {
+    std::ofstream out(filename);
+    if (!out.is_open()) {
+        std::cerr << "Error: Cannot open file for writing: " << filename << std::endl;
+        return;
+    }
+
+    for (const auto& pair : word_to_index) {
+        out << pair.first << '\t' << pair.second << '\n';
+    }
+
+    out.close();
+}
+
+std::unordered_map<std::string, int> load_word_to_index(const std::string& filename) {
+    std::unordered_map<std::string, int> word_to_index;
+    std::ifstream in(filename);
+    if (!in.is_open()) {
+        std::cerr << "Error: Cannot open file for reading: " << filename << std::endl;
+        return word_to_index;
+    }
+
+    std::string line;
+    while (std::getline(in, line)) {
+        std::istringstream iss(line);
+        std::string word;
+        int index;
+        if (std::getline(iss, word, '\t') && iss >> index) {
+            word_to_index[word] = index;
+        }
+    }
+
+    in.close();
+    return word_to_index;
+}
+
+void load_csv(const std::string& filename,
+    std::vector<std::string>& texts, std::vector<int>& labels) {
+
+    io::CSVReader<2, io::trim_chars<' '>, io::double_quote_escape<',', '\"'>> csv(filename);
+    csv.read_header(io::ignore_extra_column, "text", "target");
+
+    std::string email_text;
+    int target;
+    while (csv.read_row(email_text, target)) {
+        texts.push_back(email_text);
+        labels.push_back(target);
+    }
 }
     /*
     int rank, size;

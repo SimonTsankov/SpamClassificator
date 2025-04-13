@@ -952,7 +952,9 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <None Include="data\spam_assassin.csv" />
     <None Include="data\short.csv" />
+  </ItemGroup>
+  <ItemGroup>
+    <Xml Include="data\spam_assassin.csv" />
   </ItemGroup>
 </Project>

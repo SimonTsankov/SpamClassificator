@@ -2,6 +2,7 @@
 #include "Eigen/Dense"
 #include <cmath>
 #include <vector>
+#include <fstream>
 class NeuralNetwork {
 private:
     // Параметри на модела: тегла и bias за 2-слойна мрежа (един скрит слой)
@@ -9,6 +10,7 @@ private:
     Eigen::MatrixXd W2; Eigen::VectorXd b2;  // тегла и bias за изходния слой
     int input_dim, hidden_dim;
 public:
+    NeuralNetwork(){}
     NeuralNetwork(int input_dim, int hidden_dim) : input_dim(input_dim), hidden_dim(hidden_dim) {
         // Инициализация на теглата (Random за W, 0 за bias)
         W1 = Eigen::MatrixXd::Random(hidden_dim, input_dim);
@@ -71,5 +73,57 @@ public:
                 b1 -= lr * gradb1;
             }
         }
+    }
+
+    // Запазване на модела във файл
+    void save(const std::string& path) const {
+        std::ofstream out(path, std::ios::binary);
+        if (!out) throw std::runtime_error("Cannot open file for saving model.");
+
+        auto write_matrix = [&](const Eigen::MatrixXd& mat) {
+            int rows = mat.rows(), cols = mat.cols();
+            out.write(reinterpret_cast<const char*>(&rows), sizeof(int));
+            out.write(reinterpret_cast<const char*>(&cols), sizeof(int));
+            out.write(reinterpret_cast<const char*>(mat.data()), sizeof(double) * rows * cols);
+        };
+
+        auto write_vector = [&](const Eigen::VectorXd& vec) {
+            int size = vec.size();
+            out.write(reinterpret_cast<const char*>(&size), sizeof(int));
+            out.write(reinterpret_cast<const char*>(vec.data()), sizeof(double) * size);
+        };
+
+        write_matrix(W1);
+        write_vector(b1);
+        write_matrix(W2);
+        write_vector(b2);
+        out.close();
+    }
+
+    // Зареждане на модела от файл
+    void load(const std::string& path) {
+        std::ifstream in(path, std::ios::binary);
+        if (!in) throw std::runtime_error("Cannot open file for loading model.");
+
+        auto read_matrix = [&](Eigen::MatrixXd& mat) {
+            int rows, cols;
+            in.read(reinterpret_cast<char*>(&rows), sizeof(int));
+            in.read(reinterpret_cast<char*>(&cols), sizeof(int));
+            mat.resize(rows, cols);
+            in.read(reinterpret_cast<char*>(mat.data()), sizeof(double) * rows * cols);
+        };
+
+        auto read_vector = [&](Eigen::VectorXd& vec) {
+            int size;
+            in.read(reinterpret_cast<char*>(&size), sizeof(int));
+            vec.resize(size);
+            in.read(reinterpret_cast<char*>(vec.data()), sizeof(double) * size);
+        };
+
+        read_matrix(W1);
+        read_vector(b1);
+        read_matrix(W2);
+        read_vector(b2);
+        in.close();
     }
 };
