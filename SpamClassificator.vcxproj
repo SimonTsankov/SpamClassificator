@@ -481,6 +481,12 @@
       <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</DeploymentContent>
     </Xml>
   </ItemGroup>
+  <ItemGroup>
+    <None Include="x64\Debug\models\model_rank_0.nn" />
+    <None Include="x64\Debug\models\model_rank_1.nn" />
+    <None Include="x64\Debug\models\model_rank_2.nn" />
+    <None Include="x64\Debug\models\model_rank_3.nn" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

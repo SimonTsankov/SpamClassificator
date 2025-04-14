@@ -76,10 +76,9 @@ int main(int argc, char* argv[])
         std::cout << "Loading models... ";
         //Prompt
        
-        if (rank == 0)
-        {
-            word_to_index = load_word_to_index("models/word_to_index.txt");
-        }
+        
+        word_to_index = load_word_to_index("models/word_to_index.txt");
+        
         std::vector<std::string> model_files;
         if (rank == 0) {
             for (const auto& entry : fs::directory_iterator("models")) {

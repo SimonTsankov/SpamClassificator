@@ -952,9 +952,13 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <None Include="data\short.csv" />
+    <Xml Include="data\spam_assassin.csv" />
+    <Xml Include="data\short.csv" />
   </ItemGroup>
   <ItemGroup>
-    <Xml Include="data\spam_assassin.csv" />
+    <None Include="x64\Debug\models\model_rank_3.nn" />
+    <None Include="x64\Debug\models\model_rank_0.nn" />
+    <None Include="x64\Debug\models\model_rank_1.nn" />
+    <None Include="x64\Debug\models\model_rank_2.nn" />
   </ItemGroup>
 </Project>
