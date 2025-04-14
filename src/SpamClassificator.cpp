@@ -6,12 +6,10 @@
 #include <mpi.h>
 #include "../include/Eigen/Dense"
 #include "../include/NeuralNetwork.h"
-//#include "utils.h"
 #include <iostream>
 #include <vector>
 #include <random>
 #include <ctime>
-
 #include <algorithm>
 #include <random>
 #include <ctime>
@@ -19,12 +17,13 @@
 #include <sstream>
 #include <unordered_map>
 #include <filesystem>
+#include <chrono>
 #define _SILENCE_EXPERIMENTAL_FILESYSTEM_DEPRECATION_WARNING
 #include <experimental/filesystem>
 #include <regex>
 
 namespace fs = std::experimental::filesystem;
-// Помощна Lambda-функция за токенизация: малки букви и разделяне по интервали
+
 auto tokenize = [&](const std::string& text) {
     std::string cleaned = text;
     std::transform(cleaned.begin(), cleaned.end(), cleaned.begin(), ::tolower);
@@ -41,19 +40,22 @@ auto tokenize = [&](const std::string& text) {
     }
     return tokens;
 };
+
 void load_csv(const std::string& filename,
     std::vector<std::string>& texts, std::vector<int>& labels);
 void save_word_to_index(const std::unordered_map<std::string, int>& word_to_index,
     const std::string& filename);
 std::unordered_map<std::string, int> load_word_to_index(const std::string& filename);
 
-int main(int argc, char* argv[])
-{
+int main(int argc, char* argv[]) {
     MPI_Init(&argc, &argv);
     int rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
-    bool do_train = true;  // по подразбиране тренираме
+
+    auto program_start = std::chrono::steady_clock::now();
+
+    bool do_train = true;
     if (argc > 1) {
         std::string mode = argv[1];
         if (mode == "prompt") {
@@ -68,13 +70,13 @@ int main(int argc, char* argv[])
             return 1;
         }
     }
-    else
-        do_train = false;
+    else do_train = false;
+
     std::unordered_map<std::string, int> word_to_index;
 
     if (!do_train) {
-        std::cout << "Loading models... ";
-        //Prompt
+        if (rank == 0) std::cout << "Loading models... ";
+        auto prompt_init_start = std::chrono::steady_clock::now();
 
         word_to_index = load_word_to_index("models/word_to_index.txt");
 
@@ -92,7 +94,6 @@ int main(int argc, char* argv[])
         if (rank == 0) num_models = model_files.size();
         MPI_Bcast(&num_models, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
-        // Изпращане на имената на моделите към всички процеси
         std::string all_filenames;
         std::vector<int> filename_lengths(num_models);
         if (rank == 0) {
@@ -112,8 +113,6 @@ int main(int argc, char* argv[])
         if (rank != 0) all_filenames.resize(total_filename_chars);
         MPI_Bcast(&all_filenames[0], total_filename_chars, MPI_CHAR, 0, MPI_COMM_WORLD);
 
-        // Реконструиране на списъка с имена на моделите на процесите, различни от 0
-        // Всеки модел взима динамичен брой модели
         if (rank != 0) {
             model_files.clear();
             int offset = 0;
@@ -123,8 +122,8 @@ int main(int argc, char* argv[])
             }
         }
 
-        // Всеки процес зарежда само неговите си модели
         std::vector<NeuralNetwork> local_models;
+        auto model_load_start = std::chrono::steady_clock::now();
         for (int i = 0; i < num_models; ++i) {
             if (i % size == rank) {
                 NeuralNetwork model;
@@ -132,23 +131,27 @@ int main(int argc, char* argv[])
                 local_models.push_back(std::move(model));
             }
         }
+        auto model_load_end = std::chrono::steady_clock::now();
+        if (rank == 0) {
+            auto load_time = std::chrono::duration_cast<std::chrono::milliseconds>(model_load_end - prompt_init_start).count();
+            std::cout << "Done. [Init time: " << load_time << " ms]" << std::endl;
+        }
 
-        // Започване на въвеждане от потребителя докато не въведе exit
         std::string input;
         while (true) {
             if (rank == 0) {
                 std::cout << "Enter input (type 'exit' to quit): ";
                 std::getline(std::cin, input);
             }
-            // Изпращане на входните данни към всички процеси
             int input_len = input.length();
             MPI_Bcast(&input_len, 1, MPI_INT, 0, MPI_COMM_WORLD);
             if (input_len == 4 && input == "exit") break;
 
+            auto prompt_start = std::chrono::steady_clock::now();
+
             if (rank != 0) input.resize(input_len);
             MPI_Bcast(&input[0], input_len, MPI_CHAR, 0, MPI_COMM_WORLD);
 
-            // Токенизация и векторизация
             std::vector<std::string> tokens = tokenize(input);
             Eigen::VectorXd input_vector(word_to_index.size());
             input_vector.setZero();
@@ -159,26 +162,29 @@ int main(int argc, char* argv[])
                 }
             }
 
-            // Всеки локален модел извършва предсказание
             int local_vote_sum = 0;
             for (auto& model : local_models) {
                 int pred = model.predict_one(input_vector);
                 local_vote_sum += pred;
             }
 
-            // Сумиране на гласовете от всички процеси
             int global_vote_sum = 0;
             MPI_Reduce(&local_vote_sum, &global_vote_sum, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
 
             if (rank == 0) {
                 int final_pred = (global_vote_sum > num_models / 2) ? 1 : 0;
                 std::cout << "Prediction: " << (final_pred == 1 ? "Spam" : "Not Spam") << std::endl;
+                auto prompt_end = std::chrono::steady_clock::now();
+                auto prompt_time = std::chrono::duration_cast<std::chrono::milliseconds>(prompt_end - prompt_start).count();
+                std::cout << "[Prompt] Processing time: " << prompt_time << " ms" << std::endl;
             }
         }
         MPI_Finalize();
+        return 0;
     }
-    // Режим на обучение
+
     if (rank == 0) std::cout << "Starting training mode..." << std::endl;
+    auto training_start = std::chrono::steady_clock::now();
 
     // 1. Зареждане на CSV файла с имейли и етикети (колони "text" и "target")
     std::vector<std::string> texts;
@@ -403,7 +409,11 @@ int main(int argc, char* argv[])
         }
     }
     NeuralNetwork model(vocab_size, hidden_dim);
+    auto local_train_start = std::chrono::steady_clock::now();
     model.train(X_train.transpose(), y_train, epochs, lr);
+    auto local_train_end = std::chrono::steady_clock::now();
+    auto train_time = std::chrono::duration_cast<std::chrono::milliseconds>(local_train_end - local_train_start).count();
+    std::cout << "[RANK " << rank << "] Model training time: " << train_time << " ms" << std::endl;
 
     // 8. Векторизация на тестовите имейли и предсказване с обучените модели
     Eigen::MatrixXd X_test(test_count, vocab_size);
@@ -418,7 +428,11 @@ int main(int argc, char* argv[])
             }
         }
     }
+    auto local_pred_start = std::chrono::steady_clock::now();
     Eigen::VectorXi local_preds = model.predict(X_test);
+    auto local_pred_end = std::chrono::steady_clock::now();
+    auto pred_time = std::chrono::duration_cast<std::chrono::milliseconds>(local_pred_end - local_pred_start).count();
+    std::cout << "[RANK " << rank << "] Prediction time: " << pred_time << " ms" << std::endl;
 
     // 9. Събиране на предсказанията от всички процеси и гласуване на мнозинството (hard voting)
     std::vector<int> local_pred_vec(test_count);
@@ -449,6 +463,12 @@ int main(int argc, char* argv[])
     //11. Запис на word_to_index речник
     if (rank == 0) {
         save_word_to_index(word_to_index, "models/word_to_index.txt");
+    }
+
+    auto training_end = std::chrono::steady_clock::now();
+    if (rank == 0) {
+        auto full_train_time = std::chrono::duration_cast<std::chrono::milliseconds>(training_end - training_start).count();
+        std::cout << "[RANK 0] Full training pipeline time: " << full_train_time << " ms" << std::endl;
     }
     MPI_Finalize();
     return 0;
