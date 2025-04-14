@@ -75,10 +75,9 @@ int main(int argc, char* argv[])
     if (!do_train) {
         std::cout << "Loading models... ";
         //Prompt
-       
-        
+
         word_to_index = load_word_to_index("models/word_to_index.txt");
-        
+
         std::vector<std::string> model_files;
         if (rank == 0) {
             for (const auto& entry : fs::directory_iterator("models")) {
@@ -93,7 +92,7 @@ int main(int argc, char* argv[])
         if (rank == 0) num_models = model_files.size();
         MPI_Bcast(&num_models, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
-        // Broadcast model filenames
+        // Изпращане на имената на моделите към всички процеси
         std::string all_filenames;
         std::vector<int> filename_lengths(num_models);
         if (rank == 0) {
@@ -113,7 +112,8 @@ int main(int argc, char* argv[])
         if (rank != 0) all_filenames.resize(total_filename_chars);
         MPI_Bcast(&all_filenames[0], total_filename_chars, MPI_CHAR, 0, MPI_COMM_WORLD);
 
-        // Reconstruct model_files from buffer on non-zero ranks
+        // Реконструиране на списъка с имена на моделите на процесите, различни от 0
+        // Всеки модел взима динамичен брой модели
         if (rank != 0) {
             model_files.clear();
             int offset = 0;
@@ -123,7 +123,7 @@ int main(int argc, char* argv[])
             }
         }
 
-        // Each process loads only a subset of models
+        // Всеки процес зарежда само неговите си модели
         std::vector<NeuralNetwork> local_models;
         for (int i = 0; i < num_models; ++i) {
             if (i % size == rank) {
@@ -133,14 +133,14 @@ int main(int argc, char* argv[])
             }
         }
 
-        // Start prompting
+        // Започване на въвеждане от потребителя докато не въведе exit
         std::string input;
         while (true) {
             if (rank == 0) {
                 std::cout << "Enter input (type 'exit' to quit): ";
                 std::getline(std::cin, input);
             }
-            // Broadcast input to all
+            // Изпращане на входните данни към всички процеси
             int input_len = input.length();
             MPI_Bcast(&input_len, 1, MPI_INT, 0, MPI_COMM_WORLD);
             if (input_len == 4 && input == "exit") break;
@@ -148,7 +148,7 @@ int main(int argc, char* argv[])
             if (rank != 0) input.resize(input_len);
             MPI_Bcast(&input[0], input_len, MPI_CHAR, 0, MPI_COMM_WORLD);
 
-            // Tokenize and vectorize
+            // Токенизация и векторизация
             std::vector<std::string> tokens = tokenize(input);
             Eigen::VectorXd input_vector(word_to_index.size());
             input_vector.setZero();
@@ -159,14 +159,14 @@ int main(int argc, char* argv[])
                 }
             }
 
-            // Each local model predicts
+            // Всеки локален модел извършва предсказание
             int local_vote_sum = 0;
             for (auto& model : local_models) {
                 int pred = model.predict_one(input_vector);
                 local_vote_sum += pred;
             }
 
-            // Sum votes across processes
+            // Сумиране на гласовете от всички процеси
             int global_vote_sum = 0;
             MPI_Reduce(&local_vote_sum, &global_vote_sum, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
 
@@ -177,14 +177,14 @@ int main(int argc, char* argv[])
         }
         MPI_Finalize();
     }
-    //else train
+    // Режим на обучение
     if (rank == 0) std::cout << "Starting training mode..." << std::endl;
 
     // 1. Зареждане на CSV файла с имейли и етикети (колони "text" и "target")
     std::vector<std::string> texts;
     std::vector<int> labels;
     if (rank == 0) {
-        
+
         load_csv("data/short.csv", texts, labels);
     }
 
@@ -241,8 +241,8 @@ int main(int argc, char* argv[])
 
     // 3. Създаване на речник (уникални думи) от тренировъчните текстове на процес 0
     std::vector<std::string> vocabulary;
-    
-   
+
+
     if (rank == 0) {
         vocabulary.reserve(10000);
         for (const std::string& text : train_texts) {
@@ -503,20 +503,3 @@ void load_csv(const std::string& filename,
         labels.push_back(target);
     }
 }
-    /*
-    int rank, size;
-
-    MPI_Init(&argc, &argv);             // инициализация на MPI
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank); // номер на процеса
-    MPI_Comm_size(MPI_COMM_WORLD, &size); // брой процеси
-
-    printf("Hello from process %d of %d\n", rank, size);
-
-    std::vector<std::string> texts;
-    std::vector<int> labels;
-    load_csv("data/spam_assassin.csv", texts, labels);
-    printf("Loaded %d", texts.size());
-    MPI_Finalize();                     // завършване на MPI
-    return 0;
-}
-*/
